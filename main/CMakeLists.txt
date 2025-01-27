@@ -1,4 +1,5 @@
 idf_component_register(SRCS "main.c" "llm.c"
+                    REQUIRES esp-dsp spiffs
                     INCLUDE_DIRS ""  LDFRAGMENTS "../linker.lf")
 
 

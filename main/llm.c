@@ -7,6 +7,7 @@
  */
 
 #include "llm.h"
+#include "esp_task_wdt.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -226,7 +227,7 @@ void build_transformer(Transformer *t, char *checkpoint_path)
     matmul_params = malloc(sizeof(MatMulTaskParams));
     forward_params = malloc(sizeof(ForwardTaskParams));
     xTaskCreatePinnedToCore(matmul_task, "MatMul2", 2048, matmul_params, 19, &matmul_task_2, 1);             // Run on Core 1
-    xTaskCreatePinnedToCore(forward_task, "ForwardTask", 2048, forward_params, 19, &handle_forward_task, 1); // Run on Core 1
+    xTaskCreatePinnedToCore(forward_task, "ForwardTask", 2048, forward_params, 19, &handle_forward_task, 0); // Run on Core 0
     ESP_LOGI(TAG, "Created FreeRTOS Tasks");
 }
 
@@ -298,6 +299,8 @@ void matmul_task(void *params)
     TaskHandle_t current_task = xTaskGetCurrentTaskHandle();
     char *tName = pcTaskGetName(current_task);
     // ESP_LOGI(TAG, "Created Task %s", tName);
+    //esp_task_wdt_add(NULL);
+
     for (;;)
     {
         if (xSemaphoreTake(semaDataReady, portMAX_DELAY) == pdTRUE)
@@ -305,9 +308,19 @@ void matmul_task(void *params)
             //   ESP_LOGI(TAG, "Started Task %s", tName);
             for (int i = p->start; i < p->end; i++)
             {
+                // if (i % 10 == 0) // Reset WDT every 10 rows
+                // {
+                //     esp_task_wdt_reset();
+                // }
+
                 v4sf val = 0.0f;
                 v4sf *row = &p->w[i * p->n]; // Pointer to the start of the current row in matrix w
-                dsps_dotprod_f32_aes3(row, p->x, &val, p->n);
+
+                dsps_dotprod_f32_ansi(row, p->x, &val, p->n);
+                // if (i % 100 == 0) // Yield every 100 iterations
+                // {
+                //     vTaskDelay(pdMS_TO_TICKS(1));
+                // }
                 p->xout[i] = val;
             }
             //    ESP_LOGI(TAG, "Completed task %s", tName);
@@ -323,6 +336,8 @@ void forward_task(void *params)
     ForwardTaskParams *t_params = (ForwardTaskParams *)params;
     TaskHandle_t current_task = xTaskGetCurrentTaskHandle();
     char *tName = pcTaskGetName(current_task);
+    //esp_task_wdt_add(NULL);
+    
     // ESP_LOGI(TAG, "Created Task %s", tName);
     for (;;)
     {
@@ -337,6 +352,7 @@ void forward_task(void *params)
                 v4sf *q = t_params->s->q + h * t_params->head_size;
                 // attention scores for this head
                 v4sf *att = t_params->s->att + h * t_params->p->seq_len;
+                //esp_task_wdt_reset(); 
                 // iterate over all timesteps, including the current one
                 for (int t = 0; t <= t_params->pos; t++)
                 {
@@ -391,7 +407,9 @@ void matmul(v4sf *xout, v4sf *x, v4sf *w, int n, int d)
     {
         v4sf val = 0.0f;
         v4sf *row = &w[i * n]; // Pointer to the start of the current row in matrix w
-        dsps_dotprod_f32_aes3(row, x, &val, n);
+       //  esp_task_wdt_reset();
+        dsps_dotprod_f32_ansi(row, x, &val, n);
+       // esp_task_wdt_reset();
         xout[i] = val;
     }
     if (xSemaphoreTake(semaDataReady, portMAX_DELAY) == pdTRUE)
@@ -429,6 +447,8 @@ v4sf *forward(Transformer *transformer, int token, int pos)
     // forward all the layers
     for (unsigned long long l = 0; l < p->n_layers; l++)
     {
+        //esp_task_wdt_reset();
+
         ESP_LOGD(TAG, "X: %f, Weights %f", *x, *w->rms_att_weight);
         // attention rmsnorm
         rmsnorm(s->xb, x, w->rms_att_weight + l * dim, dim);
@@ -1045,6 +1065,8 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     {
         // forward the transformer to get logits for the next token
         v4sf *logits = forward(transformer, token, pos);
+
+        //esp_task_wdt_reset();
 
         // advance the state machine
         if (pos < num_prompt_tokens - 1)
